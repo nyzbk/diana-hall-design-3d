@@ -1,204 +1,300 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { ChevronDown, ArrowUpRight } from 'lucide-react';
+import React, { useEffect, useRef, useState, useTransition } from 'react';
+import { useScroll, useSpring, useTransform, motion } from 'framer-motion';
+import { ArrowUpRight, Compass, ShieldCheck, Sparkles } from 'lucide-react';
 
-interface HeroProps {
-  totalFrames?: number;
-}
+const TOTAL_FRAMES = 240;
 
-export const Hero: React.FC<HeroProps> = ({ totalFrames = 60 }) => {
+export const Hero: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [images, setImages] = useState<HTMLImageElement[]>([]);
-  const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
+  const imagesRef = useRef<HTMLImageElement[]>([]);
+  const currentFrameRef = useRef<number>(1);
+  const [, startTransition] = useTransition();
 
-  // Preload frames in non-blocking background queue
+  const [, setIsLoaded] = useState(false);
+  const [loadCount, setLoadCount] = useState(0);
+
+  // Jack Roberts spring physics: stiffness: 100, damping: 30
+  const { scrollYProgress } = useScroll({
+    target: containerRef,
+    offset: ['start start', 'end end'],
+  });
+
+  const smoothProgress = useSpring(scrollYProgress, {
+    stiffness: 100,
+    damping: 30,
+    restDelta: 0.0001,
+  });
+
+  // Staged narrative typography opacities across 240 frames
+  const stage1Opacity = useTransform(smoothProgress, [0, 0.18, 0.26], [1, 1, 0]);
+  const stage1Y = useTransform(smoothProgress, [0, 0.22], [0, -35]);
+
+  const stage2Opacity = useTransform(smoothProgress, [0.26, 0.34, 0.46, 0.54], [0, 1, 1, 0]);
+  const stage2Y = useTransform(smoothProgress, [0.26, 0.34, 0.46, 0.54], [35, 0, 0, -35]);
+
+  const stage3Opacity = useTransform(smoothProgress, [0.54, 0.62, 0.74, 0.82], [0, 1, 1, 0]);
+  const stage3Y = useTransform(smoothProgress, [0.54, 0.62, 0.74, 0.82], [35, 0, 0, -35]);
+
+  const stage4Opacity = useTransform(smoothProgress, [0.82, 0.90, 1], [0, 1, 1]);
+  const stage4Y = useTransform(smoothProgress, [0.82, 0.90], [35, 0]);
+
+  // Frame 1 immediate load + progressive background batching
   useEffect(() => {
-    const loadedImages: HTMLImageElement[] = new Array(totalFrames);
-    let loadedCount = 0;
+    const imgs: HTMLImageElement[] = new Array(TOTAL_FRAMES);
 
-    // Load frame 1 first for instant paint
     const firstImg = new Image();
-    firstImg.src = '/frames/frame_0001.webp';
+    firstImg.src = `/frames/frame_0001.webp?v=240`;
     firstImg.onload = () => {
-      loadedImages[0] = firstImg;
-      loadedCount++;
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(firstImg, 0, 0, canvas.width, canvas.height);
+      imgs[0] = firstImg;
+      setIsLoaded(true);
+      setLoadCount(1);
+      renderFrame(1);
+
+      let nextIndex = 2;
+      const loadBatch = () => {
+        const batchSize = 10;
+        for (let i = 0; i < batchSize && nextIndex <= TOTAL_FRAMES; i++, nextIndex++) {
+          const idx = nextIndex;
+          const img = new Image();
+          const frameNum = String(idx).padStart(4, '0');
+          img.src = `/frames/frame_${frameNum}.webp?v=240`;
+          img.onload = () => {
+            imgs[idx - 1] = img;
+            setLoadCount((prev) => prev + 1);
+            if (currentFrameRef.current === idx) {
+              renderFrame(idx);
+            }
+          };
+          imgs[idx - 1] = img;
+        }
+        if (nextIndex <= TOTAL_FRAMES) {
+          setTimeout(loadBatch, 15);
+        }
+      };
+      loadBatch();
+    };
+    imgs[0] = firstImg;
+    imagesRef.current = imgs;
+  }, []);
+
+  // Canvas COVER rendering algorithm
+  const renderFrame = (frameIndex: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    let img = imagesRef.current[frameIndex - 1];
+    if (!img || !img.complete || img.naturalWidth === 0) {
+      for (let i = frameIndex - 1; i >= 0; i--) {
+        if (imagesRef.current[i] && imagesRef.current[i].complete && imagesRef.current[i].naturalWidth > 0) {
+          img = imagesRef.current[i];
+          break;
         }
       }
+    }
+    if (!img || !img.complete || img.naturalWidth === 0) return;
 
-      // Load remaining frames asynchronously
-      for (let i = 2; i <= totalFrames; i++) {
-        const img = new Image();
-        const frameNum = String(i).padStart(4, '0');
-        img.src = `/frames/frame_${frameNum}.webp`;
-        img.onload = () => {
-          loadedImages[i - 1] = img;
-          loadedCount++;
-          if (loadedCount === totalFrames) {
-            setImages(loadedImages);
-          }
-        };
-      }
-    };
-  }, [totalFrames]);
+    const dpr = window.devicePixelRatio || 1;
+    const cw = canvas.clientWidth;
+    const ch = canvas.clientHeight;
 
-  // Scrub frames on scroll
+    if (canvas.width !== cw * dpr || canvas.height !== ch * dpr) {
+      canvas.width = cw * dpr;
+      canvas.height = ch * dpr;
+    }
+
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, cw, ch);
+
+    const imgRatio = img.naturalWidth / img.naturalHeight;
+    const canvasRatio = cw / ch;
+
+    let drawW: number;
+    let drawH: number;
+    let offsetX: number;
+    let offsetY: number;
+
+    if (canvasRatio > imgRatio) {
+      drawW = cw;
+      drawH = cw / imgRatio;
+      offsetX = 0;
+      offsetY = (ch - drawH) / 2;
+    } else {
+      drawW = ch * imgRatio;
+      drawH = ch;
+      offsetX = (cw - drawW) / 2;
+      offsetY = 0;
+    }
+
+    ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
+    ctx.restore();
+  };
+
+  // Sync canvas with spring physics
   useEffect(() => {
-    let animationFrameId: number;
-
-    const handleScroll = () => {
-      if (!containerRef.current || !canvasRef.current) return;
-
-      const rect = containerRef.current.getBoundingClientRect();
-      const scrollHeight = containerRef.current.offsetHeight - window.innerHeight;
-      const scrolled = -rect.top;
-      const progress = Math.min(Math.max(scrolled / scrollHeight, 0), 1);
-
-      const frameIndex = Math.min(
-        Math.floor(progress * totalFrames),
-        totalFrames - 1
+    const unsubscribe = smoothProgress.on('change', (v) => {
+      const targetFrame = Math.min(
+        TOTAL_FRAMES,
+        Math.max(1, Math.floor(v * (TOTAL_FRAMES - 1)) + 1)
       );
-
-      setCurrentFrameIndex(frameIndex);
-
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
-      if (ctx && images[frameIndex]) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(images[frameIndex], 0, 0, canvas.width, canvas.height);
+      if (targetFrame !== currentFrameRef.current) {
+        currentFrameRef.current = targetFrame;
+        startTransition(() => {
+          renderFrame(targetFrame);
+        });
       }
-    };
+    });
 
-    const onScroll = () => {
-      cancelAnimationFrame(animationFrameId);
-      animationFrameId = requestAnimationFrame(handleScroll);
-    };
+    return () => unsubscribe();
+  }, [smoothProgress]);
 
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => {
-      window.removeEventListener('scroll', onScroll);
-      cancelAnimationFrame(animationFrameId);
+  // Window resize handler
+  useEffect(() => {
+    const handleResize = () => {
+      renderFrame(currentFrameRef.current);
     };
-  }, [images, totalFrames]);
-
-  // Phase calculation
-  const progressRatio = currentFrameIndex / (totalFrames - 1);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   return (
-    <section id="hero" ref={containerRef} className="relative h-[280vh] bg-dh-sand">
-      {/* Sticky Viewport */}
+    <div ref={containerRef} className="relative h-[400vh] bg-[#0F1115] text-[#F5F3EF]">
+      {/* Sticky 100vh Fullscreen Viewport */}
       <div className="sticky top-0 h-screen w-full overflow-hidden flex flex-col justify-between">
-        {/* Background Visual Canvas */}
+        {/* Background Neural Canvas */}
         <canvas
           ref={canvasRef}
-          width={1920}
-          height={1080}
-          className="absolute inset-0 w-full h-full object-cover z-0 filter brightness-[0.98] contrast-[1.02]"
+          className="absolute inset-0 w-full h-full object-cover z-0 pointer-events-none"
         />
 
-        {/* Ambient Subtle Vignette for Typographic Contrast */}
-        <div className="absolute inset-0 bg-gradient-to-t from-dh-sand/90 via-transparent to-dh-bronze/25 pointer-events-none z-10" />
+        {/* Cinematic Haute Couture Oyster Vignette */}
+        <div className="absolute inset-0 bg-gradient-to-t from-[#0F1115]/95 via-[#0F1115]/40 to-[#0F1115]/80 pointer-events-none z-10" />
 
-        {/* Top Space for Navigation */}
-        <div className="relative z-20 pt-28 px-6 max-w-7xl mx-auto w-full pointer-events-none" />
+        {/* 12-Column Architectural Hairline Grid Overlay */}
+        <div className="absolute inset-0 pointer-events-none z-15 opacity-[0.08] grid grid-cols-6 md:grid-cols-12 max-w-[1600px] mx-auto px-6">
+          {Array.from({ length: 12 }).map((_, i) => (
+            <div key={i} className="border-r border-[#C59B63] h-full" />
+          ))}
+        </div>
 
-        {/* Pure Architectural Monograph Typography (Kinfolk / Aman Pacing) */}
-        <div className="relative z-20 px-6 max-w-3xl mx-auto w-full text-center pb-8 flex-1 flex flex-col justify-center pointer-events-none">
-          {/* Phase 1: Atrium Salon Entrance (0% - 34%) */}
-          <div
-            className={`transition-all duration-700 transform ${
-              progressRatio < 0.35
-                ? 'opacity-100 translate-y-0'
-                : 'opacity-0 -translate-y-6 pointer-events-none absolute'
-            }`}
-          >
-            <div className="bg-dh-sand/85 backdrop-blur-md px-6 py-6 sm:px-10 sm:py-8 rounded-3xl border border-dh-linen shadow-sm inline-block max-w-xl mx-auto pointer-events-auto">
-              <span className="block text-xs uppercase tracking-[0.3em] font-semibold text-dh-amber mb-2 font-body">
-                Port Royal &bull; Naples, Florida
-              </span>
-              <h1 className="text-3xl sm:text-5xl md:text-6xl font-serif font-normal text-dh-bronze tracking-tight leading-[1.1]">
-                Coastal architecture sculpted <br className="hidden sm:inline" />
-                <span className="italic">in stone &amp; evening light.</span>
-              </h1>
-              <p className="mt-3 text-sm sm:text-base text-dh-stone max-w-md mx-auto font-normal font-body leading-relaxed">
-                Private oceanfront pavilions, fluted bleached oak millwork, and seamless floor-to-ceiling vistas over the Gulf of Mexico.
-              </p>
-            </div>
+        {/* Top Telemetry Header */}
+        <div className="relative z-20 pt-24 px-6 md:px-12 flex justify-between items-start max-w-[1600px] mx-auto w-full">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#C59B63]/15 border border-[#C59B63]/30 text-[#C59B63] text-[11px] font-mono tracking-widest uppercase">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#C59B63] animate-ping" />
+              NAPLES ATELIER NO. 200
+            </span>
+            <span className="hidden md:inline text-[11px] font-mono text-[#D1C7BD]">
+              3560 KRAFT ROAD • NAPLES, FL
+            </span>
           </div>
 
-          {/* Phase 2: Glide to Ocean Terrace (35% - 71%) */}
-          <div
-            className={`transition-all duration-700 transform ${
-              progressRatio >= 0.35 && progressRatio < 0.72
-                ? 'opacity-100 translate-y-0'
-                : 'opacity-0 translate-y-6 pointer-events-none absolute'
-            }`}
-          >
-            <div className="bg-dh-sand/85 backdrop-blur-md px-6 py-6 sm:px-10 sm:py-8 rounded-3xl border border-dh-linen shadow-sm inline-block max-w-xl mx-auto pointer-events-auto">
-              <span className="block text-xs uppercase tracking-[0.3em] font-semibold text-dh-amber mb-2 font-body">
-                Private Gulf Pavilion
-              </span>
-              <h2 className="text-3xl sm:text-5xl md:text-6xl font-serif font-normal text-dh-bronze tracking-tight leading-[1.1]">
-                Where travertine terraces <br className="hidden sm:inline" />
-                <span className="italic">meet the gentle tide.</span>
-              </h2>
-              <p className="mt-3 text-sm sm:text-base text-dh-stone max-w-md mx-auto font-normal font-body leading-relaxed">
-                Unhurried proportions, reflection water features, and timeless French raw linen curated for bespoke Florida living.
-              </p>
-            </div>
-          </div>
-
-          {/* Phase 3: Panoramic Vista (72% - 100%) */}
-          <div
-            className={`transition-all duration-700 transform ${
-              progressRatio >= 0.72
-                ? 'opacity-100 translate-y-0'
-                : 'opacity-0 translate-y-6 pointer-events-none absolute'
-            }`}
-          >
-            <div className="bg-dh-sand/85 backdrop-blur-md px-6 py-6 sm:px-10 sm:py-8 rounded-3xl border border-dh-linen shadow-sm inline-block max-w-xl mx-auto pointer-events-auto">
-              <span className="block text-xs uppercase tracking-[0.3em] font-semibold text-dh-amber mb-2 font-body">
-                Naples Atelier &bull; Founded 1999
-              </span>
-              <h2 className="text-3xl sm:text-5xl md:text-6xl font-serif font-normal text-dh-bronze tracking-tight leading-[1.1]">
-                Twenty-five years of <br className="hidden sm:inline" />
-                <span className="italic">extraordinary residences.</span>
-              </h2>
-              <p className="mt-3 text-sm sm:text-base text-dh-stone max-w-md mx-auto font-normal font-body leading-relaxed">
-                Architecture and interior environments crafted exclusively for Port Royal, Aqualane Shores, and Pelican Bay.
-              </p>
-            </div>
+          <div className="text-right font-mono text-[11px] text-[#D1C7BD]">
+            <div className="text-[#C59B63] font-semibold">240-FRAME RETINA KINEMATICS</div>
+            <div>BUFFER: {loadCount}/{TOTAL_FRAMES} FRAMES ({Math.round((loadCount / TOTAL_FRAMES) * 100)}%)</div>
           </div>
         </div>
 
-        {/* Minimal Grounded Bar (Subtractive Restraint) */}
-        <div className="relative z-30 pb-6 px-6 max-w-3xl mx-auto w-full">
-          <div className="bg-dh-sand/95 backdrop-blur-md border border-dh-linen rounded-2xl p-4 sm:p-5 shadow-sm flex items-center justify-between gap-4">
-            <div className="text-left font-body">
-              <p className="text-[11px] uppercase tracking-[0.2em] font-semibold text-dh-amber">
-                Private Commission
-              </p>
-              <p className="text-xs sm:text-sm font-medium text-dh-bronze font-serif">
-                Currently accepting select estate engagements for 2026–2027
-              </p>
+        {/* Center Dynamic Staged Narrative */}
+        <div className="relative z-20 px-6 md:px-12 max-w-[1600px] mx-auto w-full my-auto pointer-events-none">
+          {/* Stage 1: Haute Couture Architectural Interiors */}
+          <motion.div
+            style={{ opacity: stage1Opacity, y: stage1Y }}
+            className="max-w-4xl"
+          >
+            <div className="text-[12px] font-mono tracking-[0.25em] text-[#C59B63] uppercase mb-4 flex items-center gap-2">
+              <Sparkles className="w-3.5 h-3.5 text-[#C59B63]" />
+              ESTABLISHED 1996 • NAPLES, FLORIDA
             </div>
+            <h1 className="font-serif text-[48px] md:text-[84px] leading-[0.92] tracking-tight text-[#F5F3EF]">
+              Interiors of quiet grandeur & coastal poise.
+            </h1>
+            <p className="mt-6 text-[16px] md:text-[20px] text-[#D1C7BD] max-w-2xl font-light leading-relaxed font-sans">
+              Where Florida Gulf light meets honed limestone, bookmatched walnut millwork, and bespoke European furnishings. Architectural interior design for the most discerning estates.
+            </p>
+          </motion.div>
 
-            <div className="flex items-center gap-3 shrink-0">
+          {/* Stage 2: Port Royal & Aqualane Shores Residences */}
+          <motion.div
+            style={{ opacity: stage2Opacity, y: stage2Y }}
+            className="max-w-3xl"
+          >
+            <div className="text-[12px] font-mono tracking-[0.25em] text-[#C59B63] uppercase mb-4 flex items-center gap-2">
+              <Compass className="w-3.5 h-3.5 text-[#C59B63]" />
+              PRIVATE COASTAL ENCLAVES
+            </div>
+            <h2 className="font-serif text-[44px] md:text-[76px] leading-[0.92] text-[#F5F3EF]">
+              Port Royal, Aqualane & Pelican Bay.
+            </h2>
+            <p className="mt-6 text-[16px] md:text-[19px] text-[#D1C7BD] font-light leading-relaxed font-sans">
+              Over 28 years of master commissions along Naples' most prestigious waterfront corridors. Every residence is an enduring portrait of its collectors.
+            </p>
+          </motion.div>
+
+          {/* Stage 3: Noble Materials & Bespoke Millwork */}
+          <motion.div
+            style={{ opacity: stage3Opacity, y: stage3Y }}
+            className="max-w-3xl"
+          >
+            <div className="text-[12px] font-mono tracking-[0.25em] text-[#C59B63] uppercase mb-4 flex items-center gap-2">
+              <ShieldCheck className="w-3.5 h-3.5 text-[#C59B63]" />
+              SUBTRACTIVE RESTRAINT & NOBLE MATERIALITY
+            </div>
+            <h2 className="font-serif text-[44px] md:text-[76px] leading-[0.92] text-[#F5F3EF]">
+              Every texture touchable. Every joint seamless.
+            </h2>
+            <p className="mt-6 text-[16px] md:text-[19px] text-[#D1C7BD] font-light leading-relaxed font-sans">
+              Hand-selected Italian marbles, wire-brushed French oak floors, Belgian linen drapery, and patinated architectural bronze hardware crafted exclusively for your home.
+            </p>
+          </motion.div>
+
+          {/* Stage 4: Private Atelier Consultation */}
+          <motion.div
+            style={{ opacity: stage4Opacity, y: stage4Y }}
+            className="max-w-3xl pointer-events-auto"
+          >
+            <div className="text-[12px] font-mono tracking-[0.25em] text-[#C59B63] uppercase mb-4">
+              PRIVATE COMMISSIONS
+            </div>
+            <h2 className="font-serif text-[44px] md:text-[76px] leading-[0.92] text-[#F5F3EF]">
+              Begin your private residence.
+            </h2>
+            <p className="mt-6 text-[16px] md:text-[19px] text-[#D1C7BD] font-light leading-relaxed font-sans">
+              Currently accepting selective new estate commissions and comprehensive architectural renovations for 2026–2027.
+            </p>
+            <div className="mt-8 flex flex-wrap items-center gap-4">
               <a
                 href="#commission"
-                className="inline-flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-xl bg-dh-bronze text-dh-sand text-xs font-semibold uppercase tracking-wider hover:bg-dh-bronze/90 transition-all shadow-sm group"
+                className="group relative inline-flex items-center gap-3 px-8 py-4 rounded-xl bg-[#C59B63] text-[#0F1115] font-semibold text-[14px] uppercase tracking-wider transition-all duration-300 hover:bg-[#d8ae68] shadow-lg shadow-[#C59B63]/20 hover:scale-[1.02] active:scale-[0.98]"
               >
-                <span>Consult Atelier</span>
-                <ArrowUpRight className="w-3.5 h-3.5 text-dh-amber group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
+                <span>Request Private Atelier Consultation</span>
+                <ArrowUpRight className="w-4 h-4 transition-transform group-hover:translate-x-1 group-hover:-translate-y-1" />
+              </a>
+              <a
+                href="tel:2393985423"
+                className="px-6 py-4 rounded-xl border border-[#C59B63]/30 text-[#F5F3EF] font-mono text-[13px] hover:bg-[#C59B63]/10 transition-colors"
+              >
+                (239) 398-5423
               </a>
             </div>
+          </motion.div>
+        </div>
+
+        {/* Bottom Status Ribbon */}
+        <div className="relative z-20 pb-8 px-6 md:px-12 max-w-[1600px] mx-auto w-full flex justify-between items-end border-t border-[#C59B63]/15 pt-4 text-[12px] font-mono text-[#D1C7BD]">
+          <div className="flex items-center gap-6">
+            <span className="text-[#C59B63]">ESTATE ATELIER • NAPLES, FL</span>
+            <span className="hidden md:inline">PORT ROYAL • AQUALANE SHORES • PELICAN BAY</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span>SCROLL TO EXPLORE ATELIER</span>
+            <span className="animate-bounce">↓</span>
           </div>
         </div>
       </div>
-    </section>
+    </div>
   );
 };
