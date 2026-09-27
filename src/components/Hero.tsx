@@ -193,8 +193,8 @@ export const Hero: React.FC = () => {
           </div>
 
           <div className="text-right font-mono text-[11px] text-[#D1C7BD]">
-            <div className="text-[#C59B63] font-semibold">240-FRAME RETINA KINEMATICS</div>
-            <div>BUFFER: {loadCount}/{TOTAL_FRAMES} FRAMES ({Math.round((loadCount / TOTAL_FRAMES) * 100)}%)</div>
+            <div className="text-[#C59B63] font-semibold">COASTAL ARCHITECTURAL ATELIER</div>
+            <div>PORT ROYAL • PELICAN BAY • AQUALANE</div>
           </div>
         </div>
 
